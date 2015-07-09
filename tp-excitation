@@ -1,0 +1,102 @@
+#! /bin/bash
+#
+# Calculate all excitations via the TP approximation
+# through Molden files of ground state and excited state
+# Slater determinants (i.e. ground state calculation and
+# a transition potential calculation, where a half core-hole
+# was created in the core orbital)
+# 
+# NOTE: It is always an Alpha-electron which is being excited!
+#
+#############################################################
+
+##
+# Read in files:
+#
+# ./tp_automated.sh gs_det.input ex_det.input
+#
+
+GSFILE=$1
+EXFILE=$2
+MOLDENOVERLAP=/home/paul/bin/molden_overlap
+#MOLDENOVERLAP=/home/paul/Dokumente/SFB/scripting/My_Molden_Input/molden_overlap
+
+##
+# Get total number of MOs and of occ. MOs in the GS determinant
+#
+NUMBEROFMOS=`sed -e '1,/Occup/d' -e '/Sym/,$d' $GSFILE | awk 'BEGIN {max = 0} {if ($1>max) max=$1} END {print max}'`
+NUMBEROFEXMOS=`sed -e '1,/Occup/d' -e '/Sym/,$d' $EXFILE | awk 'BEGIN {max = 0} {if ($1>max) max=$1} END {print max}'`
+NUMBERGSOCCMO=`grep -c 'Occup= 1.0' $GSFILE`
+
+echo "Number of MOs in GS:" $NUMBEROFMOS
+echo "Number of MOs in EX:" $NUMBEROFEXMOS
+
+
+
+##
+# Remove empty MOs in GS molecule
+#
+awk '/Occup= 0.0/{for(x=NR-3;x<=NR+'$NUMBEROFMOS';x++)d[x];}{a[NR]=$0}END{for(i=1;i<=NR;i++)if(!(i in d))print a[i]}' $GSFILE > gs_det.input
+
+##
+# In excited state molecule: Treat half core-hole as empty (i.e. delete it!)
+#
+awk '/Occup= 0.5/{for(x=NR-3;x<=NR+'$NUMBEROFEXMOS';x++)d[x];}{a[NR]=$0}END{for(i=1;i<=NR;i++)if(!(i in d))print a[i]}' $EXFILE > tp_det_working.input
+
+##
+# Split the excited molecule file: 
+# 1.)Leave only the occupied orbitals and delete the rest. Save in temporary file
+#
+awk '/Occup= 0.0/{for(x=NR-3;x<=NR+'$NUMBEROFEXMOS';x++)d[x];}{a[NR]=$0}END{for(i=1;i<=NR;i++)if(!(i in d))print a[i]}' tp_det_working.input > tp_only_occ.input
+
+##
+# Delete every empty Beta orbital (since it isn't needed anyway) and write 
+# all unoccupied Alpha-orbitals into a temporary file. Then count the number 
+# of empty Alpha orbitals.
+#
+
+grep --no-group-separator -B 3 -A $NUMBEROFEXMOS 'Occup= 0.0' tp_det_working.input | grep --no-group-separator -B 2 -A $((NUMBEROFEXMOS+1)) 'Spin= Alpha' > tp_unocc_alpha.input
+NUMBERUNOCCALPHA=`grep -c 'Occup= 0.0' tp_unocc_alpha.input`
+
+##
+# Begin looping over the number of unoccupied Alpha orbitals:
+# 1.) Create directories and copy the ground state determinants
+# into them
+# 2.) Use the i-th orbital of tp_unocc_alpha.input and put it
+# at the end of tp_only_occ.input to create the i-th excited
+# Slater determinant. Copy this as well in the respective directory
+#
+
+for ((i=1; i<=$NUMBERUNOCCALPHA; i++)); do
+
+mkdir -p excitation-$i
+cp gs_det.input excitation-$i/gs_det.input
+grep --no-group-separator -m $i -B 3 -A $NUMBEROFEXMOS 'Occup= 0.0' tp_unocc_alpha.input | tail -n $((NUMBEROFEXMOS+4)) | sed -e 's/Occup= 0.0/Occup= 1.0/' > tp_ex_alpha.input
+cat tp_only_occ.input tp_ex_alpha.input > excitation-$i/tp_det.input
+
+# Write molden_overlap input file
+cat <<-EOF > excitation-"$i"/inputfile
+TransitionDipoleMoment 1
+LeftHandMolecule tp_det.input
+RightHandMolecule gs_det.input
+EOF
+
+cd excitation-$i
+"$MOLDENOVERLAP" -i inputfile
+cd ..
+
+cat excitation-$i/TDM_Lowdin_Sum.out >> raw_results.dat
+
+done
+
+awk 'BEGIN { printf "%7s %10s %10s %12s %9s\n", "x:", "y:", "z:", "Norm:", "Sum:"; printf "%10s %10s %10s %10s %10s\n", "---------", "---------", "---------", "---------", "---------", "---------"}{printf "%10s %10s %10s %10s %10s\n", $2, $4, $6, $10, $8 }' raw_results.dat > TDM_results.dat
+
+rm raw_results.dat
+rm gs_det.input tp_det_working.input tp_ex_alpha.input tp_only_occ.input tp_unocc_alpha.input
+
+
+#rm gs_det.input tp_det_working.input tp_only_occ.input tp_unocc_alpha.input tp_ex_alpha.input
+
+#grep -B 2 -A $((NUMBEROFMOS+1)) 'Beta' tp_det_working.input
+
+#echo $NUMBERGSOCCMO
